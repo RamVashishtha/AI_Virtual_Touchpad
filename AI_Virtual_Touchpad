@@ -1,0 +1,110 @@
+import cv2  # Import OpenCV for image and video processing
+import numpy as np  # Import NumPy for numerical operations
+import mediapipe as mp  # Import MediaPipe for hand detection
+import pyautogui  # Import PyAutoGUI for controlling the mouse
+import time  # Import time for calculating frame rate
+
+# Parameters
+wCam, hCam = 640, 480  # Camera resolution width and height
+frameR = 100  # Frame reduction for creating a boundary around the screen
+smoothening = 7  # Smoothening factor for mouse movement
+
+# Initialize variables
+pTime = 0  # Previous time, used for calculating frame rate
+plocX, plocY = 0, 0  # Previous location of the mouse
+clocX, clocY = 0, 0  # Current location of the mouse
+
+# Initialize video capture
+cap = cv2.VideoCapture(0)  # Capture video from the default camera
+cap.set(3, wCam)  # Set the width of the captured video
+cap.set(4, hCam)  # Set the height of the captured video
+
+# Initialize MediaPipe hand detector
+mpHands = mp.solutions.hands  # Load MediaPipe Hands module
+hands = mpHands.Hands(max_num_hands=1)  # Create a hand detector that detects only one hand
+mpDraw = mp.solutions.drawing_utils  # Load drawing utilities for drawing hand landmarks
+
+# Get screen size
+wScr, hScr = pyautogui.size()  # Get the screen size (width, height) for mouse control
+
+# Function to detect which fingers are up
+def fingersUp(lmList):
+    tipsIds = [4, 8, 12, 16, 20]  # Landmark IDs for the tips of each finger
+    fingers = []  # List to store the state of each finger (up or down)
+    
+    # Thumb: Check if thumb is up (based on horizontal position)
+    if lmList[tipsIds[0]][1] > lmList[tipsIds[0] - 1][1]:  # Compare thumb tip with the previous landmark
+        fingers.append(1)  # Thumb is up
+    else:
+        fingers.append(0)  # Thumb is down
+
+    # 4 Fingers: Check if other fingers are up (based on vertical position)
+    for id in range(1, 5):
+        if lmList[tipsIds[id]][2] < lmList[tipsIds[id] - 2][2]:  # Compare tip with the second previous landmark
+            fingers.append(1)  # Finger is up
+        else:
+            fingers.append(0)  # Finger is down
+    return fingers  # Return the list of fingers' states
+
+while True:
+    # 1. Find hand landmarks
+    success, img = cap.read()  # Read a frame from the video capture
+    imgRGB = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)  # Convert the image from BGR to RGB
+    results = hands.process(imgRGB)  # Process the RGB image to detect hands
+    
+    lmList = []  # Initialize an empty list to store landmarks
+    if results.multi_hand_landmarks:  # If hands are detected
+        for handLms in results.multi_hand_landmarks:  # Loop through detected hands
+            for id, lm in enumerate(handLms.landmark):  # Loop through landmarks in the hand
+                h, w, c = img.shape  # Get the height, width, and channels of the image
+                cx, cy = int(lm.x * w), int(lm.y * h)  # Convert normalized coordinates to pixel coordinates
+                lmList.append([id, cx, cy])  # Append the landmark ID and coordinates to the list
+                
+            mpDraw.draw_landmarks(img, handLms, mpHands.HAND_CONNECTIONS)  # Draw landmarks on the image
+    
+    # 2. Get the tip of the index and middle fingers
+    if lmList:  # If landmarks are detected
+        x1, y1 = lmList[8][1:]  # Get the coordinates of the index finger tip
+        x2, y2 = lmList[12][1:]  # Get the coordinates of the middle finger tip
+
+        # 3. Check which fingers are up
+        fingers = fingersUp(lmList)  # Determine which fingers are up
+        cv2.rectangle(img, (frameR, frameR), (wCam - frameR, hCam - frameR),
+                      (255, 0, 255), 2)  # Draw a boundary rectangle on the screen
+
+        # 4. Only Index Finger: Moving Mode
+        if fingers[1] == 1 and fingers[2] == 0:  # If only the index finger is up
+            # 5. Convert Coordinates
+            x3 = np.interp(x1, (frameR, wCam - frameR), (0, wScr))  # Map the index finger x-coordinate to screen x
+            y3 = np.interp(y1, (frameR, hCam - frameR), (0, hScr))  # Map the index finger y-coordinate to screen y
+
+            # 6. Smoothen Values
+            clocX = plocX + (x3 - plocX) / smoothening  # Smooth the x-coordinate to avoid jerky movement
+            clocY = plocY + (y3 - plocY) / smoothening  # Smooth the y-coordinate to avoid jerky movement
+
+            # 7. Move Mouse
+            pyautogui.moveTo(wScr - clocX, clocY)  # Move the mouse to the calculated position on the screen
+            cv2.circle(img, (x1, y1), 15, (255, 0, 255), cv2.FILLED)  # Draw a circle at the index finger tip position
+            plocX, plocY = clocX, clocY  # Update previous mouse location to current location
+
+        # 8. Both Index and Middle Fingers are Up: Clicking Mode
+        if fingers[1] == 1 and fingers[2] == 1:  # If both index and middle fingers are up
+            # 9. Find distance between fingers
+            length = np.hypot(x2 - x1, y2 - y1)  # Calculate the distance between index and middle finger tips
+
+            # 10. Click mouse if distance short
+            if length < 40:  # If the distance is less than a threshold
+                cv2.circle(img, (x1, y1), 15, (0, 255, 0), cv2.FILLED)  # Draw a circle at the index finger tip
+                pyautogui.click()  # Perform a mouse click
+
+    # 11. Frame Rate
+    cTime = time.time()  # Get the current time
+    fps = 1 / (cTime - pTime)  # Calculate frames per second (FPS)
+    pTime = cTime  # Update previous time to current time
+    cv2.putText(img, f'FPS: {int(fps)}', (20, 50), cv2.FONT_HERSHEY_PLAIN, 3, (255, 0, 0), 3)  # Display FPS on the screen
+
+    # 12. Display
+    cv2.imshow("Image", img)  # Show the image with the drawn landmarks and rectangles
+    cv2.waitKey(1)  # Wait for 1 millisecond before displaying the next frame
+
+    
